@@ -21,15 +21,23 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'priceland-dev-key-2026')
 
-DATABASE_URL = os.environ.get('DATABASE_URL', 'sqlite:///priceland.db')
-# Railway usa postgres://, SQLAlchemy precisa de postgresql://
-# pg8000 é driver puro Python (sem libpq) — usa postgresql+pg8000://
-if DATABASE_URL.startswith('postgres://'):
-    DATABASE_URL = DATABASE_URL.replace('postgres://', 'postgresql+pg8000://', 1)
-elif DATABASE_URL.startswith('postgresql://') and 'pg8000' not in DATABASE_URL:
-    DATABASE_URL = DATABASE_URL.replace('postgresql://', 'postgresql+pg8000://', 1)
+_raw_db_url = os.environ.get('DATABASE_URL', '')
+if _raw_db_url:
+    # Normaliza para pg8000 (driver puro Python, sem libpq)
+    DATABASE_URL = re.sub(r'^postgres(ql)?://', 'postgresql+pg8000://', _raw_db_url)
+    # pg8000 no Railway: desabilita SSL via connect_args
+    _USE_PG = True
+else:
+    DATABASE_URL = 'sqlite:///priceland.db'
+    _USE_PG = False
 app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+if _USE_PG:
+    app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+        'connect_args': {'ssl_context': None},
+        'pool_pre_ping': True,
+        'pool_recycle': 300,
+    }
 
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', '')
 GROQ_API_KEY   = os.environ.get('GROQ_API_KEY', '')
