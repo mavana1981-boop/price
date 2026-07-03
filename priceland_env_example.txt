@@ -1,0 +1,7 @@
+SECRET_KEY=sua-chave-secreta-aqui
+DATABASE_URL=postgresql://...
+GEMINI_API_KEY=sua-chave-gemini
+GROQ_API_KEY=sua-chave-groq
+CF_ACCOUNT_ID=seu-account-id-cloudflare     # opcional - 3o fallback de IA
+CF_API_TOKEN=seu-api-token-cloudflare       # opcional - 3o fallback de IA
+SERPER_API_KEY=sua-chave-serper             # opcional - google shopping search
