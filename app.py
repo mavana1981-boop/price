@@ -231,12 +231,15 @@ def load_user(uid): return User.query.get(int(uid))
 # gemini_vision e groq_chat substituídos por ia_chain e gemini_vision_post acima
 
 def buscar_precos_web(produto):
-    """Busca preços via Serper (Google Search API) ou scraping simples."""
+    """Busca preços via Serper (Google Search API) ou estimativa IA."""
     resultados = []
-    if SERPER_API_KEY:
+    # Lê em tempo de execução para garantir que a variável de ambiente foi carregada
+    serper_key = os.environ.get('SERPER_API_KEY', '')
+    logger.info(f'buscar_precos_web: produto={produto}, serper_key={"OK" if serper_key else "VAZIO"}')
+    if serper_key:
         try:
             r = requests.post('https://google.serper.dev/shopping',
-                headers={'X-API-KEY': SERPER_API_KEY, 'Content-Type':'application/json'},
+                headers={'X-API-KEY': serper_key, 'Content-Type':'application/json'},
                 json={'q': f'{produto} preço supermercado', 'gl':'br','hl':'pt'},
                 timeout=15)
             if r.ok:
