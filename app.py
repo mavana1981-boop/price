@@ -1169,12 +1169,14 @@ def e500(e):
     logger.error(f'500: {e}')
     return jsonify({'error':'Erro interno'}), 500
 
-# ── Init DB ──────────────────────────────────────────────────────────────────
+# ── Init DB — roda sempre ao importar (Gunicorn não executa __main__) ────────
 def init_db():
     with app.app_context():
         db.create_all()
         logger.info('DB inicializado')
 
+# Inicializa imediatamente ao importar o módulo
+init_db()
+
 if __name__ == '__main__':
-    init_db()
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT',5000)), debug=False)
