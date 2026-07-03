@@ -242,19 +242,23 @@ def buscar_precos_web(produto):
                 headers={'X-API-KEY': serper_key, 'Content-Type':'application/json'},
                 json={'q': f'{produto} preço supermercado', 'gl':'br','hl':'pt'},
                 timeout=15)
+            logger.info(f'serper status={r.status_code}, body={r.text[:300]}')
             if r.ok:
-                for item in r.json().get('shopping', [])[:5]:
-                    price_str = item.get('price','').replace('R$','').replace('.','').replace(',','.').strip()
+                data = r.json()
+                shopping = data.get('shopping', data.get('results', []))
+                for item in shopping[:5]:
+                    price_str = str(item.get('price', item.get('priceStr', ''))).replace('R$','').replace(' ','').replace('.','').replace(',','.').strip()
                     try:
-                        price = float(re.search(r'[\d.]+', price_str).group())
-                        resultados.append({
-                            'price': price,
-                            'store': item.get('source',''),
-                            'url':   item.get('link',''),
-                            'title': item.get('title',''),
-                        })
-                    except Exception:
-                        pass
+                        price = float(re.search(r'[\d]+\.?\d*', price_str).group())
+                        if price > 0:
+                            resultados.append({
+                                'price': price,
+                                'store': item.get('source', item.get('store', '')),
+                                'url':   item.get('link', item.get('url', '')),
+                                'title': item.get('title', produto),
+                            })
+                    except Exception as ep:
+                        logger.warning(f'serper parse error: {ep} — price_str={price_str!r}')
         except Exception as e:
             logger.warning(f'serper: {e}')
 
