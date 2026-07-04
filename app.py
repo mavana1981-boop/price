@@ -231,61 +231,60 @@ def load_user(uid): return User.query.get(int(uid))
 # gemini_vision e groq_chat substituídos por ia_chain e gemini_vision_post acima
 
 def buscar_precos_web(produto):
-    """Busca preços via Serper (Google Search API) ou estimativa IA."""
+    """Busca precos via Google Custom Search API ou estimativa IA."""
     resultados = []
-    # Lê em tempo de execução para garantir que a variável de ambiente foi carregada
-    serper_key = os.environ.get('SERPER_API_KEY', '')
-    logger.info(f'buscar_precos_web: produto={produto}, serper_key={"OK" if serper_key else "VAZIO"}')
-    if serper_key:
-        try:
-            # Tenta /shopping, fallback /search
-            for _ep in ['shopping', 'search']:
-                r = requests.post(f'https://google.serper.dev/{_ep}',
-                    headers={'X-API-KEY': serper_key, 'Content-Type':'application/json'},
-                    json={'q': f'{produto} preco supermercado brasil', 'gl':'br','hl':'pt'},
-                    timeout=15)
-                logger.info(f'serper /{_ep} status={r.status_code}')
-                if r.status_code == 403: break
-                if not r.ok: continue
-                data = r.json()
-                _items = data.get('shopping', data.get('organic', []))
-                for _it in _items[:5]:
-                    _praw = str(_it.get('price',''))
-                    if not _praw:
-                        import re as _re
-                        _m = _re.search(r'R\$\s*([\d.,]+)', _it.get('snippet',''))
-                        _praw = _m.group(1) if _m else ''
-                    _ps = _praw.replace('R$','').replace('\xa0','').replace(' ','')
-                    if ',' in _ps and '.' in _ps: _ps=_ps.replace('.','').replace(',','.')
-                    elif ',' in _ps: _ps=_ps.replace(',','.')
-                    try:
-                        _price = float(re.search(r'[\d]+\.?[\d]*', _ps).group())
-                        if _price > 0:
-                            resultados.append({'price':_price,'store':_it.get('source',_it.get('domain','')),'url':_it.get('link',''),'title':_it.get('title',produto)})
-                    except Exception: pass
-                if resultados: break
-        except Exception as e:
-            logger.warning(f'serper: {e}')
+    gcse_key = os.environ.get('GOOGLE_CSE_KEY', '')
+    gcse_cx  = os.environ.get('GOOGLE_CSE_CX', '')
+    logger.info(f'buscar_precos_web: produto={produto}, gcse={"OK" if gcse_key and gcse_cx else "VAZIO"}')
 
-    # Fallback: pede ao Groq para estimar preço médio
+    if gcse_key and gcse_cx:
+        try:
+            r = requests.get('https://www.googleapis.com/customsearch/v1',
+                params={'key': gcse_key, 'cx': gcse_cx,
+                        'q': f'{produto} preco supermercado brasil',
+                        'lr': 'lang_pt', 'gl': 'br', 'num': 10},
+                timeout=15)
+            logger.info(f'gcse status={r.status_code}')
+            if r.ok:
+                for item in r.json().get('items', []):
+                    snippet = item.get('snippet', '') + ' ' + item.get('title', '')
+                    matches = re.findall(r'R\$\s*([\d]+[.,][\d]{2})', snippet)
+                    for m in matches[:2]:
+                        ps = m.replace('.', '').replace(',', '.') if ',' in m else m
+                        try:
+                            price = float(ps)
+                            if price > 0:
+                                resultados.append({
+                                    'price': price,
+                                    'store': item.get('displayLink', ''),
+                                    'url':   item.get('link', ''),
+                                    'title': item.get('title', produto),
+                                })
+                        except Exception:
+                            pass
+                    if len(resultados) >= 5:
+                        break
+        except Exception as e:
+            logger.warning(f'gcse: {e}')
+
+    # Fallback IA: estima preco medio
     if not resultados:
         try:
-            prompt = (f'Qual o preço médio de "{produto}" em supermercados brasileiros hoje? '
-                      f'Responda APENAS com JSON válido, sem markdown: '
+            prompt = (f'Qual o preco medio de "{produto}" em supermercados brasileiros hoje? '
+                      f'Responda APENAS com JSON valido, sem markdown: '
                       f'{{"preco_medio": 5.90, "variacao_min": 4.50, "variacao_max": 7.20}}')
             resp, fonte = ia_chain(prompt, max_tokens=150, temperatura=0.2, contexto='busca_preco')
-            j = json.loads(re.sub(r'```.*?```','',resp,flags=re.DOTALL).strip())
+            j = json.loads(re.sub(r'```.*?```', '', resp, flags=re.DOTALL).strip())
             resultados.append({
                 'price': j.get('preco_medio', 0),
                 'store': f'Estimativa IA ({fonte})',
                 'url': '', 'title': produto,
-                'notes': f"Variação: R$ {j.get('variacao_min',0):.2f} – R$ {j.get('variacao_max',0):.2f}"
+                'notes': f'Variacao: R$ {j.get("variacao_min",0):.2f} - R$ {j.get("variacao_max",0):.2f}'
             })
         except Exception as e:
             logger.warning(f'ia_chain busca_preco: {e}')
     return resultados
 
-# ── Scheduler: busca de preços periódica ────────────────────────────────────
 def job_buscar_precos():
     with app.app_context():
         try:
