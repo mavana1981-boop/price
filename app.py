@@ -231,58 +231,75 @@ def load_user(uid): return User.query.get(int(uid))
 # gemini_vision e groq_chat substituídos por ia_chain e gemini_vision_post acima
 
 def buscar_precos_web(produto):
-    """Busca precos via Google Custom Search API ou estimativa IA."""
+    """Busca precos via Gemini com grounding (acesso web) ou estimativa IA."""
     resultados = []
-    gcse_key = os.environ.get('GOOGLE_CSE_KEY', '')
-    gcse_cx  = os.environ.get('GOOGLE_CSE_CX', '')
-    logger.info(f'buscar_precos_web: produto={produto}, gcse={"OK" if gcse_key and gcse_cx else "VAZIO"}')
 
-    if gcse_key and gcse_cx:
+    # 1. Tenta Gemini com Google Search grounding (acessa web real)
+    gemini_key = os.environ.get('GEMINI_API_KEY', '')
+    if gemini_key:
         try:
-            r = requests.get('https://www.googleapis.com/customsearch/v1',
-                params={'key': gcse_key, 'cx': gcse_cx,
-                        'q': f'{produto} preco supermercado brasil',
-                        'lr': 'lang_pt', 'gl': 'br', 'num': 10},
-                timeout=15)
-            logger.info(f'gcse status={r.status_code}')
+            modelo = detectar_modelo_gemini(gemini_key)
+            url = f'https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={gemini_key}'
+            prompt = (f'Pesquise o preco atual de "{produto}" em supermercados brasileiros. '
+                      f'Liste ate 5 resultados com preco, loja e link. '
+                      f'Responda APENAS com JSON valido sem markdown: '
+                      f'{{"resultados":[{{"preco":22.90,"loja":"Extra","titulo":"{produto}","url":""}}]}}')
+            body = {
+                'contents': [{'parts': [{'text': prompt}]}],
+                'tools': [{'google_search': {}}],
+                'generationConfig': {'maxOutputTokens': 500, 'temperature': 0.1}
+            }
+            r = requests.post(url, json=body, timeout=20)
             if r.ok:
-                for item in r.json().get('items', []):
-                    snippet = item.get('snippet', '') + ' ' + item.get('title', '')
-                    matches = re.findall(r'R\$\s*([\d]+[.,][\d]{2})', snippet)
-                    for m in matches[:2]:
-                        ps = m.replace('.', '').replace(',', '.') if ',' in m else m
-                        try:
-                            price = float(ps)
-                            if price > 0:
-                                resultados.append({
-                                    'price': price,
-                                    'store': item.get('displayLink', ''),
-                                    'url':   item.get('link', ''),
-                                    'title': item.get('title', produto),
-                                })
-                        except Exception:
-                            pass
-                    if len(resultados) >= 5:
-                        break
+                texto = r.json()['candidates'][0]['content']['parts'][0]['text']
+                clean = re.sub(r'```.*?```', '', texto, flags=re.DOTALL).strip()
+                # Tenta parsear JSON
+                m = re.search(r'\{.*\}', clean, re.DOTALL)
+                if m:
+                    j = json.loads(m.group())
+                    for it in j.get('resultados', [])[:5]:
+                        p = float(it.get('preco', 0))
+                        if p > 0:
+                            resultados.append({
+                                'price': p,
+                                'store': it.get('loja', ''),
+                                'url':   it.get('url', ''),
+                                'title': it.get('titulo', produto),
+                            })
+                logger.info(f'gemini_grounding: {len(resultados)} resultados')
         except Exception as e:
-            logger.warning(f'gcse: {e}')
+            logger.warning(f'gemini_grounding: {e}')
 
-    # Fallback IA: estima preco medio
+    # 2. Fallback: estimativa IA via ia_chain
     if not resultados:
         try:
-            prompt = (f'Qual o preco medio de "{produto}" em supermercados brasileiros hoje? '
-                      f'Responda APENAS com JSON valido, sem markdown: '
-                      f'{{"preco_medio": 5.90, "variacao_min": 4.50, "variacao_max": 7.20}}')
-            resp, fonte = ia_chain(prompt, max_tokens=150, temperatura=0.2, contexto='busca_preco')
-            j = json.loads(re.sub(r'```.*?```', '', resp, flags=re.DOTALL).strip())
-            resultados.append({
-                'price': j.get('preco_medio', 0),
-                'store': f'Estimativa IA ({fonte})',
-                'url': '', 'title': produto,
-                'notes': f'Variacao: R$ {j.get("variacao_min",0):.2f} - R$ {j.get("variacao_max",0):.2f}'
-            })
+            prompt = (f'Qual o preco medio de "{produto}" em supermercados brasileiros hoje em julho 2026? '
+                      f'Responda APENAS com JSON valido sem markdown: '
+                      f'{{"preco_medio":5.90,"variacao_min":4.50,"variacao_max":7.20,"exemplos":[{{"loja":"Extra","preco":5.90}},{{"loja":"Atacadao","preco":4.50}}]}}')
+            resp, fonte = ia_chain(prompt, max_tokens=300, temperatura=0.2, contexto='busca_preco')
+            clean = re.sub(r'```.*?```', '', resp, flags=re.DOTALL).strip()
+            j = json.loads(clean)
+            # Usa exemplos se disponíveis
+            for ex in j.get('exemplos', [])[:3]:
+                p = float(ex.get('preco', 0))
+                if p > 0:
+                    resultados.append({
+                        'price': p,
+                        'store': f'{ex.get("loja","Supermercado")} (estimativa {fonte})',
+                        'url': '', 'title': produto, 'notes': 'Estimativa IA'
+                    })
+            if not resultados:
+                p = float(j.get('preco_medio', 0))
+                if p > 0:
+                    resultados.append({
+                        'price': p,
+                        'store': f'Estimativa IA ({fonte})',
+                        'url': '', 'title': produto,
+                        'notes': f'Variacao: R$ {j.get("variacao_min",0):.2f} - R$ {j.get("variacao_max",0):.2f}'
+                    })
         except Exception as e:
             logger.warning(f'ia_chain busca_preco: {e}')
+
     return resultados
 
 def job_buscar_precos():
