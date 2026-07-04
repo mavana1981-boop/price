@@ -231,75 +231,52 @@ def load_user(uid): return User.query.get(int(uid))
 # gemini_vision e groq_chat substituídos por ia_chain e gemini_vision_post acima
 
 def buscar_precos_web(produto):
-    """Busca precos via Gemini com grounding (acesso web) ou estimativa IA."""
+    """Busca precos reais via Gemini Grounding. Sem estimativas."""
     resultados = []
-
-    # 1. Tenta Gemini com Google Search grounding (acessa web real)
-    gemini_key = os.environ.get('GEMINI_API_KEY', '')
-    if gemini_key:
-        try:
-            modelo = detectar_modelo_gemini(gemini_key)
-            url = f'https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generateContent?key={gemini_key}'
-            prompt = (f'Pesquise o preco atual de "{produto}" em supermercados brasileiros. '
-                      f'Liste ate 5 resultados com preco, loja e link. '
-                      f'Responda APENAS com JSON valido sem markdown: '
-                      f'{{"resultados":[{{"preco":22.90,"loja":"Extra","titulo":"{produto}","url":""}}]}}')
-            body = {
-                'contents': [{'parts': [{'text': prompt}]}],
-                'tools': [{'google_search': {}}],
-                'generationConfig': {'maxOutputTokens': 500, 'temperature': 0.1}
-            }
-            r = requests.post(url, json=body, timeout=20)
-            if r.ok:
-                texto = r.json()['candidates'][0]['content']['parts'][0]['text']
-                clean = re.sub(r'```.*?```', '', texto, flags=re.DOTALL).strip()
-                # Tenta parsear JSON
-                m = re.search(r'\{.*\}', clean, re.DOTALL)
-                if m:
-                    j = json.loads(m.group())
-                    for it in j.get('resultados', [])[:5]:
-                        p = float(it.get('preco', 0))
-                        if p > 0:
-                            resultados.append({
-                                'price': p,
-                                'store': it.get('loja', ''),
-                                'url':   it.get('url', ''),
-                                'title': it.get('titulo', produto),
-                            })
-                logger.info(f'gemini_grounding: {len(resultados)} resultados')
-        except Exception as e:
-            logger.warning(f'gemini_grounding: {e}')
-
-    # 2. Fallback: estimativa IA via ia_chain
-    if not resultados:
-        try:
-            prompt = (f'Qual o preco medio de "{produto}" em supermercados brasileiros hoje em julho 2026? '
-                      f'Responda APENAS com JSON valido sem markdown: '
-                      f'{{"preco_medio":5.90,"variacao_min":4.50,"variacao_max":7.20,"exemplos":[{{"loja":"Extra","preco":5.90}},{{"loja":"Atacadao","preco":4.50}}]}}')
-            resp, fonte = ia_chain(prompt, max_tokens=300, temperatura=0.2, contexto='busca_preco')
-            clean = re.sub(r'```.*?```', '', resp, flags=re.DOTALL).strip()
-            j = json.loads(clean)
-            # Usa exemplos se disponíveis
-            for ex in j.get('exemplos', [])[:3]:
-                p = float(ex.get('preco', 0))
-                if p > 0:
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    if not gemini_key:
+        return []
+    try:
+        modelo = detectar_modelo_gemini(gemini_key)
+        url = ("https://generativelanguage.googleapis.com/v1beta/models/"
+               + modelo + ":generateContent?key=" + gemini_key)
+        prompt = (
+            "Busque o preco ATUAL de \"" + produto + "\" em supermercados brasileiros. "
+            "Use apenas precos REAIS encontrados na web agora. Nao invente precos. "
+            "Se nao encontrar, retorne lista vazia. "
+            "Responda SOMENTE com JSON valido sem markdown: "
+            '{"resultados":[{"preco":22.90,"loja":"Extra","titulo":"produto","url":"https://..."}]}'
+        )
+        body = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "tools": [{"google_search": {}}],
+            "generationConfig": {"maxOutputTokens": 600, "temperature": 0.0}
+        }
+        r = requests.post(url, json=body, timeout=25)
+        if not r.ok:
+            logger.warning(f"gemini grounding HTTP {r.status_code}")
+            return []
+        texto = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+        clean = re.sub(r"```.*?```", "", texto, flags=re.DOTALL).strip()
+        m = re.search(r"\{.*\}", clean, re.DOTALL)
+        if not m:
+            return []
+        j = json.loads(m.group())
+        for it in j.get("resultados", []):
+            try:
+                p = float(str(it.get("preco", 0)).replace(",", "."))
+                if p > 0 and it.get("loja", ""):
                     resultados.append({
-                        'price': p,
-                        'store': f'{ex.get("loja","Supermercado")} (estimativa {fonte})',
-                        'url': '', 'title': produto, 'notes': 'Estimativa IA'
+                        "price": p, "store": str(it.get("loja", "")),
+                        "url": str(it.get("url", "")),
+                        "title": str(it.get("titulo", produto)),
+                        "source": "busca"
                     })
-            if not resultados:
-                p = float(j.get('preco_medio', 0))
-                if p > 0:
-                    resultados.append({
-                        'price': p,
-                        'store': f'Estimativa IA ({fonte})',
-                        'url': '', 'title': produto,
-                        'notes': f'Variacao: R$ {j.get("variacao_min",0):.2f} - R$ {j.get("variacao_max",0):.2f}'
-                    })
-        except Exception as e:
-            logger.warning(f'ia_chain busca_preco: {e}')
-
+            except Exception:
+                pass
+        logger.info(f"gemini grounding \"{produto}\": {len(resultados)} preco(s) real(is)")
+    except Exception as e:
+        logger.warning(f"gemini grounding: {e}")
     return resultados
 
 def job_buscar_precos():
