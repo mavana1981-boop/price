@@ -238,27 +238,32 @@ def buscar_precos_web(produto):
     logger.info(f'buscar_precos_web: produto={produto}, serper_key={"OK" if serper_key else "VAZIO"}')
     if serper_key:
         try:
-            r = requests.post('https://google.serper.dev/shopping',
-                headers={'X-API-KEY': serper_key, 'Content-Type':'application/json'},
-                json={'q': f'{produto} preço supermercado', 'gl':'br','hl':'pt'},
-                timeout=15)
-            logger.info(f'serper status={r.status_code}, body={r.text[:300]}')
-            if r.ok:
+            # Tenta /shopping, fallback /search
+            for _ep in ['shopping', 'search']:
+                r = requests.post(f'https://google.serper.dev/{_ep}',
+                    headers={'X-API-KEY': serper_key, 'Content-Type':'application/json'},
+                    json={'q': f'{produto} preco supermercado brasil', 'gl':'br','hl':'pt'},
+                    timeout=15)
+                logger.info(f'serper /{_ep} status={r.status_code}')
+                if r.status_code == 403: break
+                if not r.ok: continue
                 data = r.json()
-                shopping = data.get('shopping', data.get('results', []))
-                for item in shopping[:5]:
-                    price_str = str(item.get('price', item.get('priceStr', ''))).replace('R$','').replace(' ','').replace('.','').replace(',','.').strip()
+                _items = data.get('shopping', data.get('organic', []))
+                for _it in _items[:5]:
+                    _praw = str(_it.get('price',''))
+                    if not _praw:
+                        import re as _re
+                        _m = _re.search(r'R\$\s*([\d.,]+)', _it.get('snippet',''))
+                        _praw = _m.group(1) if _m else ''
+                    _ps = _praw.replace('R$','').replace('\xa0','').replace(' ','')
+                    if ',' in _ps and '.' in _ps: _ps=_ps.replace('.','').replace(',','.')
+                    elif ',' in _ps: _ps=_ps.replace(',','.')
                     try:
-                        price = float(re.search(r'[\d]+\.?\d*', price_str).group())
-                        if price > 0:
-                            resultados.append({
-                                'price': price,
-                                'store': item.get('source', item.get('store', '')),
-                                'url':   item.get('link', item.get('url', '')),
-                                'title': item.get('title', produto),
-                            })
-                    except Exception as ep:
-                        logger.warning(f'serper parse error: {ep} — price_str={price_str!r}')
+                        _price = float(re.search(r'[\d]+\.?[\d]*', _ps).group())
+                        if _price > 0:
+                            resultados.append({'price':_price,'store':_it.get('source',_it.get('domain','')),'url':_it.get('link',''),'title':_it.get('title',produto)})
+                    except Exception: pass
+                if resultados: break
         except Exception as e:
             logger.warning(f'serper: {e}')
 
